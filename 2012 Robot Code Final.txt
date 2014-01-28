@@ -1,0 +1,540 @@
+/*
+
+The robot code for team 1389 in the 2012 FIRST Robotics Competition. (Rebound Rumble)
+The objective is to play a modified game of basketball.
+Comments have been added in most places, much vestigal code is left in
+for future reference.
+
+//*/
+
+
+// Includes
+#include "WPILib.h" // The WPI Library
+#include <sysLib.h>	// Stuff
+#include <math.h>	// Maths
+#include "Magic.h"	// Makes everything work
+#include "More Magic.h" // Fixes everything
+
+// Defines
+#define LEFT	(0) // Used for the VictorPorts Array
+#define RIGHT	(1)
+
+// XBOX Controller button and axis numbers
+#define ButtonX 			(3) // XBox Controller X Button number for getRawButton() or getRawAxis()
+#define ButtonA				(1) // XBox Controller A Button number
+#define ButtonB				(2) // XBox Controller B Button number
+#define ButtonY				(4) // XBox Controller Y Button number
+#define BumperL				(5) // XBox Controller  Left Bumper number
+#define BumperR				(6) // XBox Controller Right Bumper number
+#define LeftY				(2) // XBox Controller  Left Y Axis number
+#define LeftX				(1) // XBox Controller  Left X Axis number
+#define RightY				(5) // XBox Controller Right Y Axis number
+#define RightX				(4) // XBox Controller Right X Axis number
+
+//Motor ports and other values
+#define BamBarwindowmoter1  (5) // BAMBar Window Motor (1) port
+#define BamBarwindowmoter2  (6) // BAMBar Window Motor (2) port 
+#define ShooterAngle		(45)	 // Degrees. Unused because we need radians
+#define ShooterElevation	(132.08) // In CM to middle of shooter
+#define BasketHeight		(276.86) // In CM to middle of basket
+#define ShooterY			BasketHeight-ShooterElevation
+#define ShooterDiam			(20.32)  // In CM
+#define BAMSensorTop		(1) // NOT USED
+#define BAMSensorBottom		(2) // NOT USED
+#define TowerLiftTop1		(9) // Tower lift top motor 1 port
+#define TowerLiftTop2		(10)// Tower lift top motor 2 port
+#define TowerLiftBottom1	(7) // Tower lift bottom motor 1 port
+#define TowerLiftBottom2	(8) // Tower lift bottom motor 2 port
+#define TowerTopSpeed		(.7) // Speed of the top part of the tower
+
+// PID Values
+// PID is used to smoothly use encoders, and is MANDATORY! (Will not work without values)
+#define JagP				(1.505) // P Value for Jags
+#define JagI				(0.003) // I Value for Jags
+#define JagD				(0.000) // D Value for Jags
+
+// Version information
+#define VersionAuthor		("Cheeseyx")
+#define VersionNumber		("2.1.7.10")
+#define VersionMessage		("Competition v7.10")
+
+
+
+static const UINT8 VictorPorts[2][2]={{1,2},{3,4}}; // Ports for the drive train victors
+
+static double c1=0,c2=0;
+static double speed=1.0;
+
+static float ShootDist;
+
+static bool autonomousOn;
+
+// Tower Bottom motors
+static Victor *towerBottom1, *towerBottom2;
+
+static Victor *BamBarwindow1; // BAMBar motors
+static Victor *BamBarwindow2;
+static float BAMBarSpeed;
+//static DigitalInput *BAMTop, *BAMBottom;
+
+
+static Joystick *LeftXBOXController, *RightXBOXController; // XBox Controllers
+
+class CustomRobotDrive : public RobotDrive
+{
+public:
+	CustomRobotDrive() : RobotDrive((UINT32)1,(UINT32)3){
+		InitRobotDrive();
+		m_safetyHelper->SetExpiration(48*60*60);//Two Days
+	}
+	virtual ~CustomRobotDrive(){}
+	virtual void SetLeftRightMotorOutputs(float leftOutput, float rightOutput){
+		//DrivetrainActivate(leftOutput,rightOutput);
+		c1=leftOutput*speed;
+		c2=rightOutput*speed;
+		m_safetyHelper->Feed();
+	}
+};
+
+
+static Gyro *gyro;
+
+///*
+   static void gyro_resetter(){
+	while(1){
+		if(LeftXBOXController->GetRawButton(ButtonX))
+			gyro->Reset();
+			
+		taskDelay(0);
+	}
+}//*/
+
+
+// We make our own function to calculate absolute value because the abs() function returns integers
+static float absol(float a){
+	if (a<0)
+		return -a;
+	return a;
+} 
+
+	 
+ static void BAMBar(){
+	 towerBottom1=new Victor(TowerLiftBottom1);
+	 towerBottom2=new Victor(TowerLiftBottom2);
+	 bool Tower;
+	BamBarwindow1 = new Victor(BamBarwindowmoter1);
+	BamBarwindow2 = new Victor(BamBarwindowmoter2);
+	 while(1){
+		BAMBarSpeed=-LeftXBOXController->GetRawAxis(RightY);
+		Tower=RightXBOXController->GetRawButton(BumperR);
+			BamBarwindow1->Set(BAMBarSpeed,0);
+			BamBarwindow2->Set(BAMBarSpeed,0);
+		if(Tower){
+			towerBottom1->Set(.7,0); // Tower bottom up
+			towerBottom2->Set(.7,0);
+		}else if(RightXBOXController->GetRawButton(BumperL)){
+			towerBottom1->Set(-.7,0); // Tower bottom down
+			towerBottom2->Set(-.7,0);
+		
+		}else if(!autonomousOn){
+			towerBottom1->Set(0,0); // Stop tower bottom
+			towerBottom2->Set(0,0);
+		}
+		
+		taskDelay(0);
+	 }
+ }
+ 
+ 
+ 
+
+
+
+class MyRobot : public SimpleRobot
+{
+	int timesRun;
+	
+
+	
+	Victor *victor1Left;
+	Victor *victor1Right;
+	Victor *victor2Left;
+	Victor *victor2Right;
+	
+	Victor *towerTop1, *towerTop2;
+	
+	CANJaguar *Jag2, *Jag3, *Jag4;
+	
+	DriverStationLCD *ds;
+	bool balancing;
+	CustomRobotDrive *rd;
+	
+	float pi;
+	float Angle;
+	double q;
+	float power;
+	
+//	MotorSafetyHelper *Safe;
+
+public:
+	MyRobot(void)
+	{
+		autonomousOn=false;
+		gyro=new Gyro(1,1);
+		gyro->Reset();
+		timesRun=0;
+		//BAMBottom = new DigitalInput(2,BAMSensorBottom);
+		//BAMTop = new DigitalInput(2,BAMSensorTop);
+		balancing=false;
+		LeftXBOXController = new Joystick(1);
+		RightXBOXController= new Joystick(2);
+		victor2Left = new Victor(VictorPorts[LEFT][0]);
+		victor1Left = new Victor(VictorPorts[LEFT][1]);
+		victor1Right = new Victor(VictorPorts[RIGHT][0]);
+		victor2Right = new Victor(VictorPorts[RIGHT][1]);
+		
+		ds=DriverStationLCD::GetInstance();
+		
+		BAMBarSpeed=0;
+		
+		Jag2=new CANJaguar(2, CANJaguar::kSpeed);//,CANJaguar::kSpeed); // Can Jaguars set to RPM mode (kSpeed)
+		Jag3=new CANJaguar(3, CANJaguar::kSpeed);//,CANJaguar::kSpeed);
+		Jag4=new CANJaguar(4);
+
+		Jag2->SetPID(JagP, JagI, JagD);
+		Jag3->SetPID(JagP, JagI, JagD);
+
+		Jag2->ConfigEncoderCodesPerRev(400);
+		Jag3->ConfigEncoderCodesPerRev(400);
+		
+		Jag2->SetSpeedReference(CANJaguar::kSpeedRef_Encoder);
+		Jag3->SetSpeedReference(CANJaguar::kSpeedRef_Encoder);
+		
+		Jag2->EnableControl(0.0);
+		Jag3->EnableControl(0.0);
+		
+		
+		rd=new CustomRobotDrive();
+		taskSpawn("Gyro Resetter",Task::kDefaultPriority,VX_FP_TASK,2000,(FUNCPTR)gyro_resetter,0,0,0,0,0,0,0,0,0,0);
+		//taskSpawn("Position Tracker",Task::kDefaultPriority,VX_FP_TASK,4000,(FUNCPTR)posTracker,0,0,0,0,0,0,0,0,0,0);
+		taskSpawn("BAMBar",Task::kDefaultPriority,VX_FP_TASK,2000,(FUNCPTR)BAMBar,0,0,0,0,0,0,0,0,0,0);
+		pi=atan(1)*4; // Calculate Pi. Pi is ArcTan(1) * 4
+		Angle=pi/4; // Angle of the shooter ( Pi/4 radians, or 45 degrees)
+		
+//		Safe=new MotorSafetyHelper(rd);
+		
+		towerTop1=new Victor(TowerLiftTop1);
+		towerTop2=new Victor(TowerLiftTop2);
+		//towerBottom1=new Victor(TowerLiftBottom1);
+		//towerBottom2=new Victor(TowerLiftBottom2);
+		DriverStationLCD::GetInstance()->Clear();
+		DriverStationLCD::GetInstance()->Printf(DriverStationLCD::kUser_Line1,1,"Robot ready!");
+		DriverStationLCD::GetInstance()->Printf(DriverStationLCD::kUser_Line2,1,"Version %s", VersionNumber);
+		DriverStationLCD::GetInstance()->Printf(DriverStationLCD::kUser_Line3,1,"All glory to %s", VersionAuthor);
+		DriverStationLCD::GetInstance()->Printf(DriverStationLCD::kUser_Line4,1, VersionMessage);
+		DriverStationLCD::GetInstance()->UpdateLCD();
+		
+		
+	}
+	
+	
+	void Autonomous(void)
+	{
+		autonomousOn=true;
+		timesRun++;
+		Wait(0.1);
+		rd->ArcadeDrive(-.25, 0, false);
+		victor1Left->Set(c1);
+		victor2Left->Set(c1);
+		victor1Right->Set(c2);
+		victor2Right->Set(c2);
+		Jag2->Set(825,0);
+		Jag3->Set(825,0);
+		Wait(5);
+		rd->ArcadeDrive(0,0,false);
+		victor1Left->Set(c1);
+		victor2Left->Set(c1);
+		victor1Right->Set(c2);
+		victor2Right->Set(c2);
+		towerTop1->Set(-TowerTopSpeed,0);
+		towerTop2->Set(TowerTopSpeed,0);
+		Wait(3);
+		Jag2->Set(835,0);
+		Jag3->Set(835,0);
+		towerBottom1->Set(.7,0);
+		towerBottom2->Set(.7,0);
+		Wait(3);
+		towerBottom1->Set(0,0);
+		towerBottom2->Set(0,0);
+		Wait(2);
+		Jag2->Set(0,0);
+		Jag3->Set(0,0);
+		towerTop1->Set(0,0);
+		towerTop2->Set(0,0);
+		//AutoShoot();
+		//while(IsAutonomous()&&IsEnabled()){
+		//}
+		/*
+		ds->Clear();
+		ds->Printf(DriverStationLCD::kUser_Line1, 1, "15: %f", calcPower(15));
+		ds->Printf(DriverStationLCD::kUser_Line2, 1, "20: %f", calcPower(20));
+		ds->Printf(DriverStationLCD::kUser_Line3, 1, "25: %f", calcPower(25));
+		ds->Printf(DriverStationLCD::kUser_Line4, 1, "30: %f", calcPower(30));
+		ds->UpdateLCD();
+		float wait=1;
+		while(IsEnabled()&&IsAutonomous()){
+			Jag4->Set(.3,0);
+			Safe->Feed();
+			Wait(wait);
+			Jag4->Set(0,0);
+			Safe->Feed();
+			Wait(wait);
+			Jag4->Set(-.3,0);
+			Safe->Feed();
+			Wait(wait);
+			Jag4->Set(0,0);
+			Safe->Feed();
+			Wait(wait);
+		}//*/
+		autonomousOn=false;
+		ds->Clear();
+		ds->Printf(DriverStationLCD::kUser_Line1,1,"Robot ready!");
+		ds->Printf(DriverStationLCD::kUser_Line2,1,"Version %s", VersionNumber);
+		ds->Printf(DriverStationLCD::kUser_Line3,1,"All glory to %s", VersionAuthor);
+		ds->Printf(DriverStationLCD::kUser_Line4,1, VersionMessage);
+		ds->Printf(DriverStationLCD::kUser_Line5,1,"(Runned %d times)", timesRun);
+		ds->UpdateLCD();
+		//*/
+	}
+
+	
+	void OperatorControl(void)
+		{
+			autonomousOn=false;
+			timesRun++;
+			while (IsEnabled()&&IsOperatorControl())
+			{		
+				ds->Clear();
+				speed=LeftXBOXController->GetRawButton(BumperL)?1.0:0.5;
+				if(LeftXBOXController->GetRawButton(BumperR))
+					speed*=0.25;
+				actuateVictors();
+				// Speed modifiers. Half speed at left bumper, Quarter on right, Eighth on both
+				Shoot();
+//				Safe->Feed();
+				
+				actuateVictors(); // This function also drives the robot
+				
+				q=gyro->GetAngle();
+				ds->PrintfLine(DriverStationLCD::kUser_Line2,"speed=%f",speed);
+				ds->PrintfLine(DriverStationLCD::kUser_Line1,"angle=%f",q);
+				ds->UpdateLCD();
+				
+				actuateVictors();
+
+//				Safe->Feed();
+				taskDelay(0); // Forces the thread to yeild to other threads
+			}
+			ds->Clear();
+			ds->Printf(DriverStationLCD::kUser_Line1,1,"Robot ready!");
+			ds->Printf(DriverStationLCD::kUser_Line2,1,"Version %s", VersionNumber);
+			ds->Printf(DriverStationLCD::kUser_Line3,1,"All glory to %s", VersionAuthor);
+			ds->Printf(DriverStationLCD::kUser_Line4,1, VersionMessage);
+			ds->Printf(DriverStationLCD::kUser_Line5,1,"(Runned %d times)", timesRun);
+			ds->UpdateLCD();
+		}
+	
+	
+	
+	void alignRobot(void)
+			{
+			 // Used to balance the robot on the bridge
+			double q;	
+			double positiveMovement = .42;
+		
+				
+				
+				
+				
+				victor1Left->Set(0,0);
+				victor1Right->Set(0,0);
+				victor2Right->Set(0,0);
+				victor2Left->Set(0,0);
+				
+				q=gyro->GetAngle();
+				while ((absol(q) > 12))
+				{
+					if(!LeftXBOXController -> GetRawButton(ButtonB))
+						return;
+				
+			    
+				q=gyro->GetAngle();
+				
+				 
+					if (q >= 5)
+					{ 
+						victor1Left->Set(positiveMovement);
+						victor1Right->Set(positiveMovement);
+						victor2Right->Set(positiveMovement);
+						victor2Left->Set(positiveMovement);
+						
+					}
+					if (q <= -5)
+								{
+						victor1Left->Set(-positiveMovement );
+						victor1Right->Set(-positiveMovement );
+						victor2Right->Set(-positiveMovement );
+						victor2Left->Set(-positiveMovement );
+						}
+					
+				}
+				if ((absol(q) < 13) && LeftXBOXController->GetRawButton(ButtonB))
+					{
+							positiveMovement -= .05;
+							
+					}
+				victor1Left->Set(0,0);
+				victor1Right->Set(0,0);
+				victor2Right->Set(0,0);
+				victor2Left->Set(0,0);
+			}//*/
+	
+	
+	void actuateVictors(){
+		//double c1=LeftXBOXController->GetRawAxis(LeftY)*0.75;
+		//double c2=LeftXBOXController->GetRawAxis(LeftX)*0.75;
+		if(LeftXBOXController -> GetRawButton(ButtonB)){
+			alignRobot();
+			balancing=true;
+		}else{
+			balancing=false;
+			rd->ArcadeDrive(LeftXBOXController,false);
+			victor1Left->Set(c1);
+			victor2Left->Set(c1);
+			victor1Right->Set(c2);
+			victor2Right->Set(c2);
+		}
+	}
+	
+	float calcPower(){ 
+		ShootDist*=30.48; // Convert feet to CM. Will need to chance if input changes from feet
+		float a=tan(Angle)*ShootDist;
+		a-=ShooterY;
+		a/=980*(ShootDist*ShootDist);
+		a=((float)1)/a;
+		a/=(cos(Angle))*(cos(Angle));
+		a=sqrt(a); // Radial force of wheels needed
+		a/=ShooterDiam*pi; // Convert to RPS
+		a*=81; // Converts to RPM (to Minutes from Seconds)
+		return a+40;
+	}
+	float calcPower(float dist){
+		dist*=30.48; // Convert feet to CM. Will need to chance if input changes from feet
+		float a=tan(Angle)*dist;
+		a-=ShooterY;
+		a/=980*(dist*dist);
+		a=((float)1)/a;
+		a/=(cos(Angle))*(cos(Angle));
+		a=sqrt(a); // Radial force of wheels needed
+		a/=ShooterDiam*pi; // Convert to RPS
+		a*=81; //  Converts RPS to RPM
+		return a+40; // Compensates for PID settings
+	}
+
+	
+	///*
+	   void Shoot(){
+		power=calcPower(12.5); // Gets the power to shoot
+		float modify=-RightXBOXController->GetRawAxis(LeftY);
+		if(absol(modify)<=0.1)
+			modify=0;
+		modify/=2;
+		modify+=1;
+		power*=modify;
+		float turn=0;
+//		float bluh=-RightXBOXController->GetRawAxis(LeftY);
+//		bluh=(bluh/2)+.5;
+//		if(bluh<0)
+//			bluh=0;
+		bool shortShot=RightXBOXController->GetRawButton(ButtonX);
+		bool longShot=RightXBOXController->GetRawButton(ButtonY);
+		if(RightXBOXController->GetRawButton(ButtonA)||shortShot||longShot){
+			//Jag2->Set(power, 0);
+			//Jag3->Set(power, 0);
+			ds->Printf(DriverStationLCD::kUser_Line3, 1, "enabled: %f", power);
+			ds->Printf(DriverStationLCD::kUser_Line4, 1, "at: %f", Jag2->GetSpeed());
+			ds->Printf(DriverStationLCD::kUser_Line5, 1, "mod: %f", modify);
+//			ds->Printf(DriverStationLCD::kUser_Line3, 1, "enabled: %f", RightXBOXController->GetRawAxis(LeftY));
+			towerTop1->Set(-TowerTopSpeed,0);
+			towerTop2->Set(TowerTopSpeed,0);
+			if(!shortShot){
+				if(!longShot){
+					Jag2->Set(power,0);
+					Jag3->Set(power,0);
+				} else {
+					Jag2->Set(2300,0);
+					Jag3->Set(2300,0);
+					ds->Printf(DriverStationLCD::kUser_Line4, 1, "long: %f", Jag2->GetSpeed());
+					ds->Printf(DriverStationLCD::kUser_Line5, 1, "no mod                   ");
+				}
+			} else{
+				Jag2->Set(840, 0);
+				Jag3->Set(840, 0);
+				ds->Printf(DriverStationLCD::kUser_Line4, 1, "short: %f", Jag2->GetSpeed());
+				ds->Printf(DriverStationLCD::kUser_Line5, 1, "no mod                   ");
+			}
+			
+//			Jag4->Set(0,0);
+		}else{
+				Jag2->Set(0,0);
+				Jag3->Set(0,0);
+				turn=RightXBOXController->GetRawAxis(RightX);
+				if(absol(turn)<=0.05)
+					turn=0;
+				Jag4->Set(-.5*turn,0);
+				ds->Printf(DriverStationLCD::kUser_Line3, 1, "disabled");
+				if(RightXBOXController->GetRawButton(ButtonB)){
+					towerTop1->Set(TowerTopSpeed);
+					towerTop2->Set(-TowerTopSpeed);
+				}else{
+					towerTop1->Set(0,0);
+					towerTop2->Set(0,0);
+				}
+		   }
+		}//*/
+		
+		
+		
+	  
+	
+		void AutoShoot(){
+			
+			power=calcPower(13);
+			Wait(0.1);
+			Jag2->Set(power,0);
+			Jag3->Set(power,0);
+			Wait(3);
+			Jag2->Set(power,0);
+			Jag3->Set(power,0);
+			towerTop1->Set(-TowerTopSpeed,0);
+			towerTop2->Set(TowerTopSpeed,0);
+			Wait(2);
+			Jag2->Set(power,0);
+			Jag3->Set(power,0);
+			towerBottom1->Set(.7,0);
+			towerBottom2->Set(.7,0);
+			Wait(4);
+			towerBottom1->Set(0,0);
+			towerBottom2->Set(0,0);
+			towerTop1->Set(0,0);
+			towerTop2->Set(0,0);
+			Jag2->Set(0,0);
+			Jag3->Set(0,0);
+		}
+	
+	
+	
+};
+
+START_ROBOT_CLASS(MyRobot);
+

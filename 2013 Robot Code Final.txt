@@ -1,0 +1,679 @@
+/*
+
+ The robot code for team 1389 in the 2013 FIRST Robotics Competition. (Ultimate Ascent)
+ The objective is to play a modified game of frisbee golf
+ The endgame goal is to climb a 'jungle-gym pyramid'
+
+ Mostly commented, as to help organization
+
+ */
+
+//// HEAD - Includes and Defines
+
+/// Includes
+#include "WPILib.h" // The WPI Library
+#include <sysLib.h>	// Stuff
+#include <math.h>	// Maths
+
+
+
+/// Defines
+#define Pi					(3.1415926535898) // Pi to 13 places
+#define Tao					(2*Pi) // Tao = 2 Pi
+#define Octopi				(8*Pi) // Or is it octopodes?
+
+// XBOX Controller button and axis numbers
+#define ButtonX 			(3) // XBox Controller X Button number for getRawButton() or getRawAxis()
+#define ButtonA				(1) // XBox Controller A Button number
+#define ButtonB				(2) // XBox Controller B Button number
+#define ButtonY				(4) // XBox Controller Y Button number
+#define BumperL				(5) // XBox Controller  Left Bumper number
+#define BumperR				(6) // XBox Controller Right Bumper number
+
+#define LeftY				(2) // XBox Controller  Left Y Axis number
+#define LeftX				(1) // XBox Controller  Left X Axis number
+#define RightY				(5) // XBox Controller Right Y Axis number
+#define RightX				(4) // XBox Controller Right X Axis number
+
+// Motor ports
+#define M_DriveLF			(7) // Left, Front Drive motor
+#define M_DriveLR			(9) // Left, Front Drive motor
+#define M_DriveRF			(8) // Left, Front Drive motor
+#define M_DriveRR			(10) // Left, Front Drive motor
+#define M_Shooter			(3)
+#define M_Flappy			(4)
+
+// Solenoid Ports
+#define S_HopperOpen		(3)
+#define S_HopperClose		(4)
+#define S_HangerOpen		(1)
+#define S_HangerClose		(2)
+#define S_AimerOpen			(5)
+#define S_AimerClose		(6)
+
+// Sensor ports
+
+
+// PID Values
+// PID is used to smoothly use encoders, and is MANDATORY! (Will not work without values)
+#define JagP				(1.505) // P Value for Jags (From 2012 manual testing)
+#define JagI				(0.003) // I Value for Jags (From 2012 manual testing)
+#define JagD				(0.000) // D Value for Jags (From 2012 manual testing)
+
+
+// Other defines
+#define deadzone			(0.07)
+#define defaultSpeed		(3500)
+#define speedFlick			(50)
+
+/// Version information
+#define VersionAuthor		("Tara")
+#define VersionNumber		("3.2.0.t.1")  
+// Verison number system is A.B.C.D.E
+// A = Competition Year Final Digit
+// B = Tournament number (Build/Pre season = 0, first competition = 1, second = 2, third = 3, etc.)
+// C = Major increment number (Increment after major changes / code merges)
+// D = Author Definition letter (First letter of first name / first x+1 where x letters are shared between authors)
+// E = Version ID number (Increment every code change, hex numbers preferred)
+#define VersionMessage		("Auto Raise")
+
+
+
+//// PRE-BODY - Static Variables and Static Functions
+
+/// Static primative variables
+
+
+// Motors for all threads
+
+// Drive Motors
+Victor *DriveLF, *DriveLR, *DriveRF, *DriveRR;
+
+// Spikes
+Relay *compress;
+
+
+// Sensors for all threads
+DigitalInput *pressureSensorTest;
+
+
+// Controllers
+static Joystick *LeftXBOXController, *RightXBOXController; // XBox Controllers
+static DriverStation *ds; // Driver Station
+
+static const DriverStationLCD::Line Line1 = DriverStationLCD::kUser_Line1;
+static const DriverStationLCD::Line Line2 = DriverStationLCD::kUser_Line2;
+static const DriverStationLCD::Line Line3 = DriverStationLCD::kUser_Line3;
+static const DriverStationLCD::Line Line4 = DriverStationLCD::kUser_Line4;
+static const DriverStationLCD::Line Line5 = DriverStationLCD::kUser_Line5;
+static const DriverStationLCD::Line Line6 = DriverStationLCD::kUser_Line6;
+
+/// Classes
+
+// Custom RobotDrive 
+//*
+
+class CustomRobotDrive: public RobotDrive {
+public:
+
+	float c1, c2;
+	float speed;
+	CustomRobotDrive() :
+		RobotDrive((UINT32) 1, (UINT32) 3) {
+		InitRobotDrive();
+		speed = 1;
+		m_safetyHelper->SetExpiration(48 * 60 * 60); // Two Days
+	}
+	virtual ~CustomRobotDrive() {
+	}
+	virtual void SetLeftRightMotorOutputs(float leftOutput, float rightOutput) {
+		//DrivetrainActivate(leftOutput,rightOutput);
+		c1 = leftOutput * speed;
+		c2 = rightOutput * speed;
+		m_safetyHelper->Feed();
+	}
+	
+	
+};//*/
+
+class SuperSolenoid {
+
+	Solenoid *open, *close;
+	bool isOpen;
+
+public:
+
+	SuperSolenoid(int openPort, int closePort) {
+		open = new Solenoid(1, openPort);
+		close = new Solenoid(1, closePort);
+		isOpen = false;
+	}
+
+	void setOpen() {
+		isOpen = true;
+		open->Set(true);
+		close->Set(false);
+	}
+	void setClose() {
+		isOpen = false;
+		open->Set(false);
+		close->Set(true);
+	}
+	void Set(bool newState) {
+		if (newState)
+			setOpen();
+		if (!newState)
+			setClose();
+	}
+
+	bool isOpened() {
+		return isOpen;
+	}
+
+};
+
+
+
+//// LOW-BODY - Alternative Threads and their methods
+
+/// Static Functions
+
+
+// Absolute Value Function for decimals
+static double absolute(double a) {
+	if (a < 0)
+		return -a;
+	return a;
+}
+
+// Easy deadzone calculation for joystick axis inputs
+static double deadZone(double value, double maxDead) {
+	if (absolute(value) < maxDead)
+		return 0;
+	return value;
+
+}
+
+/// Other Threads
+
+
+static void autoCompressor(){
+	
+	while(true){
+		
+		while(ds->IsEnabled()){
+			
+			if(pressureSensorTest->Get()){
+				compress->Set(Relay::kOn);
+			} else {
+				compress->Set(Relay::kOff);
+			}
+			
+		}
+		
+		// compressor set off
+		
+		
+	}
+	
+}
+
+
+/*
+static void drive() {
+
+	CustomRobotDrive *rd = new CustomRobotDrive();
+
+	//RobotDrive *drive=new RobotDrive(DriveLF, DriveLR, DriveRF, DriveRR);
+
+	while (true) {
+
+		//DriveLF->Set(0);
+		//DriveLR->Set(0);
+		DriveRF->Set(0);
+		DriveRR->Set(0);
+
+		while (ds->IsDisabled()) {
+			taskDelay(0);
+		}
+
+		//DriveLF->Set(0);
+		//DriveLR->Set(0);
+		DriveRF->Set(0);
+		DriveRR->Set(0);
+
+		while (ds->IsAutonomous() && ds->IsEnabled()) {
+
+			//DriveLF->Set(1);
+			//DriveLR->Set(1);
+			DriveRF->Set(1);
+			DriveRR->Set(1);
+
+			taskDelay(0);
+		}
+
+		//DriveLF->Set(0);
+		//DriveLR->Set(0);
+		DriveRF->Set(0);
+		DriveRR->Set(0);
+
+		while (ds->IsOperatorControl() && ds->IsEnabled()) {
+			rd->speed = LeftXBOXController->GetRawButton(BumperL) ? 1.0 : 0.5;
+			if (LeftXBOXController->GetRawButton(BumperR))
+				rd->speed *= 0.25;
+
+			rd->ArcadeDrive(LeftXBOXController, false);
+
+			//DriveLF->Set(-rd->c1);
+			//DriveLR->Set(-rd->c1);
+			DriveRF->Set(rd->c2);
+			DriveRR->Set(rd->c2);
+
+			taskDelay(0);
+		}
+		taskDelay(0);
+	}
+}//*/
+
+
+
+
+//// BODY - Main thread and methods
+
+
+/**	List of motor controllers, solenoids, sensors, and other mechanical interactions:
+ * 	
+ * 	Drive: 
+ * 			4 Victors
+ * 			
+ * 	Shoot:
+ * 			1 CANJaguars (Motor control, no encoder)
+ * 			1 ??? Motor controller (Pitch/angle)
+ * 			
+ * 	Hopper:
+ * 			1 Super Solenoid (Hopper control)
+ * 			
+ * 	Climb:
+ * 			1 Super Solenoid (Hanging)
+ * 			
+ * 				Possibly 1 Victor for danny's climber chain rig
+ * 				Possibly 1 touch sensor
+ * 				Possibly 1 Victor for tilt
+ * 			
+ */
+
+class MyRobot: public SimpleRobot {
+
+	// Main thread variables
+
+	int timesRun; // To display how many times code has been ran between restarts
+	double shotSpeed;
+	double shotSpeedFlick;
+	
+	// Robot Drive
+	CustomRobotDrive *rd;
+
+	//Victors
+	 //Victor *pump;
+
+	// Jaguars
+
+
+	// CANJaguars
+	CANJaguar *Shooter;
+	 //CANJaguar *Flappy;
+
+	// Solenoids
+	SuperSolenoid *hanger, *hopper, *aimer;
+
+	// Spike (Class is just called Relay)
+	 //Relay *compress;
+	
+	// Sensors
+
+	// Driver Station
+	DriverStationLCD *ds_lcd;
+	
+
+	
+
+public:
+	MyRobot(void) {
+		// Variables *must* be declared in order. The code is VERY picky about this
+		
+		// Declare all multithread (static) variables in order
+		LeftXBOXController = new Joystick(1);
+		RightXBOXController = new Joystick(2);
+		ds = DriverStation::GetInstance();
+
+		// initialize drive motors
+		DriveLF = new Victor(M_DriveLF);
+		DriveLR = new Victor(M_DriveLR);
+		DriveRF = new Victor(M_DriveRF);
+		DriveRR = new Victor(M_DriveRR);
+
+
+		// Declare all main thread variables and motors in order
+
+		timesRun = 0;
+		shotSpeed = defaultSpeed;
+		shotSpeedFlick = speedFlick;
+		rd = new CustomRobotDrive();
+		
+		
+		//pump = new Victor(5);
+
+		Shooter = new CANJaguar(M_Shooter, CANJaguar::kSpeed);
+		
+		Shooter->SetPID(JagP, JagI, JagD);
+		
+		Shooter->ConfigEncoderCodesPerRev(400);
+		
+		Shooter->SetSpeedReference(CANJaguar::kSpeedRef_Encoder);
+		
+		Shooter->EnableControl();
+		
+		
+		//Flappy	= new CANJaguar(M_Flappy);
+
+		hanger = new SuperSolenoid(S_HangerOpen, S_HangerClose);
+		hopper = new SuperSolenoid(S_HopperOpen, S_HopperClose);
+		aimer  = new SuperSolenoid(S_AimerOpen,  S_AimerClose);
+		
+		compress = new Relay(1, Relay::kForwardOnly);
+		
+		pressureSensorTest = new DigitalInput(1);
+
+		ds_lcd = DriverStationLCD::GetInstance();
+		
+		
+		
+		// Spawn other threads
+		/* EX:
+		 taskSpawn("ThreadName",Task::kDefaultPriority,VX_FP_TASK,2000,(FUNCPTR)(MethodName),0,0,0,0,0,0,0,0,0,0);
+		 */
+
+		//taskSpawn("Drive", Task::kDefaultPriority, VX_FP_TASK, 2000,(FUNCPTR) drive, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+		
+
+		// Default display screen
+		defaultDisplay();
+
+	}
+
+	void defaultDisplay() {
+
+		ds_lcd->Clear();
+		ds_lcd->Printf(Line1, 1, "Robot ready!");
+		ds_lcd->Printf(Line2, 1, "Version: %s", VersionNumber);
+		ds_lcd->Printf(Line3, 1, "Version by %s", VersionAuthor);
+		ds_lcd->Printf(Line4, 1, VersionMessage);
+		ds_lcd->UpdateLCD();
+	}
+
+	void postUseDisplay() {
+		ds_lcd->Clear();
+		ds_lcd->Printf(Line1, 1, "Robot ready!");
+		ds_lcd->Printf(Line2, 1, "Version %s", VersionNumber);
+		ds_lcd->Printf(Line3, 1, "Version by %s", VersionAuthor);
+		ds_lcd->Printf(Line4, 1, VersionMessage);
+		ds_lcd->Printf(Line5, 1, "(Ran %d times)", timesRun);
+		ds_lcd->UpdateLCD();
+	}
+
+
+	void Autonomous(void) {
+		timesRun++;
+
+		// Autonomous code here
+		
+		Wait(.25);
+		Shooter->Set(3400);
+		aimer->setOpen();
+		Wait(6);
+		
+		hopper->setClose();
+		Wait(.5);
+		hopper->setOpen();
+		Wait(2);
+
+		hopper->setClose();
+		Wait(.5);
+		hopper->setOpen();
+		Wait(2);
+		
+		hopper->setClose();
+		Wait(.5);
+		hopper->setOpen();
+		
+		Shooter->Set(0);		
+
+
+		while (IsAutonomous() && IsEnabled()) {
+			
+		}
+		
+		DriveLF->Set(0);
+		DriveLR->Set(0);
+		DriveRF->Set(0);
+		DriveRR->Set(0);
+
+
+		postUseDisplay();
+
+	}
+
+	void OperatorControl(void) {
+		timesRun++;
+
+		
+		
+		while (IsEnabled() && IsOperatorControl()) {
+
+			// Print
+			ds_lcd->Clear();
+			ds_lcd->Printf(Line1, 1, "We are amazing");
+			ds_lcd->Printf(Line2, 1, "Shot RPM: %f", Shooter->GetSpeed());
+
+			
+			// Methods
+			hangTest();
+			pumpTest();
+			driveTest();
+			//flapTest();
+			//shoot();
+			adjustedShoot();
+			hopperControl();
+			
+
+			taskDelay(0); // Forces the thread to yeild to other threads
+			ds_lcd->UpdateLCD(); // Update driver station once priority is returned from other threads
+			// This guarentees other threads can update the display
+		}
+
+		// Code from here down in OperatorControl will not be reached at the tournament (I think)
+
+		
+
+		DriveLF->Set(0);
+		DriveLR->Set(0);
+		DriveRF->Set(0);
+		DriveRR->Set(0);
+
+		postUseDisplay();
+	}
+
+	void hangTest() {
+
+		if (LeftXBOXController->GetRawButton(BumperR)) {
+			hanger->setOpen();
+		} else if (LeftXBOXController->GetRawButton(BumperL)) {
+			hanger->setClose();
+		}
+
+	}
+
+	void pumpTest() {
+
+		if (LeftXBOXController->GetRawButton(ButtonA)&&0==pressureSensorTest->Get()) {
+			compress->Set(Relay::kOn);
+		} else {
+			compress->Set(Relay::kOff);
+		}
+
+	}
+
+	void driveTest() {
+		
+		rd->speed = LeftXBOXController->GetRawButton(ButtonX) ? 1.0 : 0.5;
+		if (LeftXBOXController->GetRawButton(ButtonY))
+			rd->speed = 0.25;
+
+		rd->ArcadeDrive(LeftXBOXController, false);
+
+		DriveLF->Set(-rd->c1);
+		DriveLR->Set(rd->c1);
+		DriveRF->Set(rd->c2);
+		DriveRR->Set(rd->c2);
+
+	}
+	
+	
+	/*
+	void holoDrive(){
+
+	    float LeftX1; // This will gain the X value of left joystick on the 360 
+	    float LeftY1; // This will gain the Y value of the left joystick on the 360 
+	    float RightX1;
+	    float RightY1; //This will gain the Y value of the right joystick on the 360 
+	    float Mag; //This will get the magnitude for Holonomic Drive 
+	    float Direct; //Get direction of Holonomic Drive 
+	    float Rotate; //Just pass Right X into it for the rotation 
+
+		
+		
+		LeftX1= LeftXBOXController->GetRawAxis(LeftX); 
+		if (absolute(LeftX1) < .2) { 
+		    LeftX1 = 0; 
+		} 
+		    
+		LeftY1= LeftXBOXController->GetRawAxis(LeftY); 
+		if (absolute(LeftY1) < .2) { 
+			LeftY1 = 0; 
+		} 
+		RightX1= LeftXBOXController->GetRawAxis(RightX); 
+		if (absolute(RightX1) < .3) { 
+		    RightX1 = 0; 
+		} 
+		RightY1= LeftXBOXController->GetRawAxis(RightY); 
+		if (absolute(RightY1) < .15) { 
+			RightY1 = 0; 
+		} 
+		Rotate=0; 
+		Mag= sqrt((LeftY1*LeftY1)+(LeftX1*LeftX1)); 
+		if (LeftX1==0) { //Do not change. Keeps from dividing by zero 
+			if (LeftY1>=0) { 
+					Direct = 180; 
+			} else { 
+				Direct = 0; 
+			}
+		} else { 
+			Direct = (atan2(LeftX1, (-1)*LeftY1)*(180/3.14159)); //Calculates direction in degrees in X/-Y 
+		} 
+		Rotate = RightX1; 
+		myRobot->HolonomicDrive(Mag, Direct, Rotate); 
+		
+	}//*/
+	
+	/*
+	void flapTest(){
+		double flip=deadZone(LeftXBOXController->GetRawAxis(RightY), 0.07);
+		Flappy->Set(flip);
+		ds_lcd->Printf(Line3, 1, "%f", flip);
+		
+	}//*/
+
+	/*
+	void shoot() {
+
+		double shootSpeed = 0;
+		if (RightXBOXController->GetRawButton(BumperL))
+			shootSpeed = .96;
+		if (RightXBOXController->GetRawButton(BumperR))
+			shootSpeed = 1;
+		
+		//shootSpeed*=absolute(RightXBOXController->GetRawAxis(LeftY));
+		
+		ds_lcd->Printf(Line4, 1, "Shot Speed:");
+		ds_lcd->Printf(Line5, 1, "   %f", shootSpeed);
+		
+		Shooter->Set(shootSpeed);
+			
+		if(shootSpeed==0){
+			// Adjust angle
+			aimAdjuster();
+		}
+	}//*/
+	
+	void adjustedShoot(){
+		
+		double flickr = deadZone(-RightXBOXController->GetRawAxis(LeftY), .6);
+		
+		
+		if(flickr==0){
+			shotSpeedFlick = speedFlick;
+		} else{
+			if(flickr>0)
+				shotSpeed+=shotSpeedFlick;
+			if(flickr<0)
+				shotSpeed-=shotSpeedFlick;
+			shotSpeedFlick=0;
+		}
+		ds_lcd->Printf(Line3, 1, " * %f", shotSpeedFlick);
+		ds_lcd->Printf(Line4, 1, "Shot Speed:");
+		ds_lcd->Printf(Line5, 1, "   %f", shotSpeed);
+		
+		if(RightXBOXController->GetRawButton(BumperR)){
+			Shooter->Set(shotSpeed);
+			ds_lcd->Printf(Line4, 1, "Shooting at:");
+		} else {
+			Shooter->Set(0);
+			aimAdjuster();
+			if(RightXBOXController->GetRawButton(BumperL)){
+				shotSpeed=defaultSpeed;
+			}
+		}
+
+		
+		
+	}
+	
+	void hopperControl(){
+		if (RightXBOXController->GetRawButton(ButtonA)) {
+			hopper->setOpen();
+		} else if (RightXBOXController->GetRawButton(ButtonB)) {
+			hopper->setClose();
+		}
+	}
+	
+	void aimAdjuster(){
+		double tempee = deadZone(-RightXBOXController->GetRawAxis(RightY), .8);
+		
+		ds_lcd->Printf(Line6, 1, "%f", tempee);
+		
+		if(tempee>0){
+			aimer->setOpen();
+		}
+		if(tempee<0){
+			aimer->setClose();
+		}
+		
+	}
+	
+	
+};
+
+START_ROBOT_CLASS(MyRobot)
+;
+
+// Heatdeath of the universe
